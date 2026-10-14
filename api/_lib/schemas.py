@@ -38,6 +38,7 @@ class UserOut(BaseModel):
     plan_interval: Optional[str]
     plan_renews_at: Optional[datetime]
     is_pro: bool
+    auto_renews: bool  # subscription (renews) vs one-time pass (just ends)
 
 
 class AuthOut(BaseModel):

@@ -1,5 +1,7 @@
+import json
 import os
 
+os.environ["NEXTSTEP_IGNORE_DOTENV"] = "1"  # never use the developer's real keys in tests
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["DEMO_BILLING"] = "1"
 
@@ -161,6 +163,10 @@ def test_dev_login_only_locally(monkeypatch):
     remote = TestClient(app, base_url="http://localhost:5173", client=("203.0.113.9", 5000))
     assert remote.post("/api/auth/dev-login").status_code == 404
     tunnel = TestClient(app, base_url="https://abc.ngrok.app", client=("127.0.0.1", 5000)).post("/api/auth/dev-login")
+    # The local-only "reset to Free" follows the same rules.
+    h = {"Authorization": f"Bearer {r.json()['token']}"}
+    assert local.post("/api/billing/dev-reset", headers=h).json()["plan"] == "free"
+    assert remote.post("/api/billing/dev-reset", headers=h).status_code == 404
     assert tunnel.status_code == 404
 
 
@@ -190,3 +196,89 @@ def test_concurrent_cold_start(tmp_path):
         assert not errors
     finally:
         db.engine, db._tables_ready = original_engine, original_ready
+
+
+def test_one_time_pass(monkeypatch):
+    """Keys but no plan IDs → Pro is sold as a one-time pass via Razorpay Orders."""
+    import hashlib
+    import hmac as _hmac
+
+    from _lib import config
+    from _lib.routes import billing
+
+    monkeypatch.setattr(config, "RAZORPAY_ENABLED", True)
+    monkeypatch.setattr(config, "RAZORPAY_SUBSCRIPTIONS", False)
+    monkeypatch.setattr(config, "RAZORPAY_KEY_ID", "rzp_test_x")
+    monkeypatch.setattr(config, "RAZORPAY_KEY_SECRET", "secret")
+    monkeypatch.setattr(config, "RAZORPAY_WEBHOOK_SECRET", "whsec")
+
+    orders, payments, calls = {}, {}, []
+
+    def fake(method, path, payload=None):
+        calls.append((method, path))
+        if method == "POST" and path == "/orders":
+            oid = f"order_{len(orders) + 1}"
+            orders[oid] = {"id": oid, "amount": payload["amount"], "currency": payload["currency"], "notes": payload["notes"]}
+            return orders[oid]
+        if path.startswith("/orders/"):
+            return orders[path.split("/")[-1]]
+        if path.endswith("/capture"):
+            payments[path.split("/")[2]]["status"] = "captured"
+            return payments[path.split("/")[2]]
+        if path.startswith("/payments/"):
+            return payments[path.split("/")[-1]]
+        raise AssertionError(path)
+
+    monkeypatch.setattr(billing, "_razorpay", fake)
+    h = auth("pass@b.co")
+    cfg = client.get("/api/billing/config").json()
+    assert cfg["mode"] == "one_time" and "INR_monthly" in cfg["available"]
+
+    co = client.post("/api/billing/checkout", json={"interval": "monthly", "currency": "INR"}, headers=h).json()
+    assert co["mode"] == "one_time" and co["amount"] == 29900 and co["currency"] == "INR"
+    oid = co["order_id"]
+    payments["pay_1"] = {"id": "pay_1", "order_id": oid, "amount": 29900, "currency": "INR", "status": "authorized"}
+
+    def sig(order_id, payment_id):
+        return _hmac.new(b"secret", f"{order_id}|{payment_id}".encode(), hashlib.sha256).hexdigest()
+
+    bad = client.post("/api/billing/verify", json={"razorpay_order_id": oid, "razorpay_payment_id": "pay_1", "razorpay_signature": "nope"}, headers=h)
+    assert bad.status_code == 400
+
+    body = {"razorpay_order_id": oid, "razorpay_payment_id": "pay_1", "razorpay_signature": sig(oid, "pay_1")}
+    u = client.post("/api/billing/verify", json=body, headers=h).json()
+    assert u["is_pro"] and not u["auto_renews"] and u["plan_interval"] == "monthly"
+    assert ("POST", "/payments/pay_1/capture") in calls  # manual-capture accounts get captured
+    first_end = u["plan_renews_at"]
+
+    # Replaying the same payment (browser retry or webhook) doesn't extend twice.
+    again = client.post("/api/billing/verify", json=body, headers=h).json()
+    assert again["plan_renews_at"] == first_end
+    event = json.dumps({"event": "order.paid", "payload": {"order": {"entity": orders[oid]}, "payment": {"entity": payments["pay_1"]}}}).encode()
+    whsig = _hmac.new(b"whsec", event, hashlib.sha256).hexdigest()
+    assert client.post("/api/billing/webhook", content=event, headers={"X-Razorpay-Signature": whsig}).status_code == 200
+    assert client.get("/api/me", headers=h).json()["plan_renews_at"] == first_end
+
+    # A second pass while still Pro extends from the current end date.
+    co2 = client.post("/api/billing/checkout", json={"interval": "yearly", "currency": "INR"}, headers=h).json()
+    payments["pay_2"] = {"id": "pay_2", "order_id": co2["order_id"], "amount": 178800, "currency": "INR", "status": "captured"}
+    u2 = client.post("/api/billing/verify", json={"razorpay_order_id": co2["order_id"], "razorpay_payment_id": "pay_2", "razorpay_signature": sig(co2["order_id"], "pay_2")}, headers=h).json()
+    from datetime import datetime as _dt
+    gap = _dt.fromisoformat(u2["plan_renews_at"]) - _dt.fromisoformat(first_end)
+    assert gap.days == 366
+
+    # Someone else's order can't be redeemed on this account.
+    other = auth("other@b.co")
+    stolen = client.post("/api/billing/verify", json=body | {"razorpay_payment_id": "pay_1"}, headers=other)
+    assert stolen.status_code == 400
+
+    # Webhook path alone (buyer closed the tab) also grants the pass.
+    h3 = auth("closedtab@b.co")
+    co3 = client.post("/api/billing/checkout", json={"interval": "monthly", "currency": "USD"}, headers=h3).json()
+    assert co3["amount"] == 500 and co3["currency"] == "USD"
+    payments["pay_3"] = {"id": "pay_3", "order_id": co3["order_id"], "amount": 500, "currency": "USD", "status": "captured"}
+    ev = json.dumps({"event": "order.paid", "payload": {"order": {"entity": orders[co3["order_id"]]}, "payment": {"entity": payments["pay_3"]}}}).encode()
+    client.post("/api/billing/webhook", content=ev, headers={"X-Razorpay-Signature": _hmac.new(b"whsec", ev, hashlib.sha256).hexdigest()})
+    assert client.get("/api/me", headers=h3).json()["is_pro"]
+
+    assert client.post("/api/billing/cancel", json={}, headers=h).status_code == 400  # passes don't renew

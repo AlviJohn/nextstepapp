@@ -75,7 +75,13 @@ The plan logic is in `api/_lib/routes/billing.py`. Every plan change goes throug
    ```
    Any plan left blank is shown as unavailable. Use test-mode keys first.
 
-**Flow:** Upgrade → `POST /api/billing/checkout` creates a subscription → Razorpay Checkout opens (UPI, cards, netbanking; international cards for USD) → `POST /api/billing/verify` checks the signature and grants Pro → the webhook keeps renewals and cancellations in sync. Cancelling keeps Pro until the paid period ends.
+**Two modes, chosen automatically:**
+- **Keys only** (no plan IDs): Pro is sold as a **one-time pass** through Razorpay Orders (₹299 / 1 month, ₹1,788 / 12 months, or $5 / $36). It doesn't auto-renew, and buying again extends from the current end date. Use this while Razorpay hasn't enabled Subscriptions on your account. Add `order.paid` to your webhook events so a buyer who closes the tab mid-payment still gets Pro.
+- **Keys + plan IDs:** auto-renewing subscriptions, as below.
+
+On localhost, the Pro page shows a "Reset to Free (local testing only)" button so you can repeat checkout. The server refuses it anywhere else.
+
+**Subscription flow:** Upgrade → `POST /api/billing/checkout` creates a subscription → Razorpay Checkout opens (UPI, cards, netbanking; international cards for USD) → `POST /api/billing/verify` checks the signature and grants Pro → the webhook keeps renewals and cancellations in sync. Cancelling keeps Pro until the paid period ends.
 
 *Alternative:* for a global USD audience, Stripe (or a merchant of record like Paddle/Lemon Squeezy, which also handles sales tax/VAT) can replace Razorpay by implementing the same `checkout`/`webhook` endpoints and calling `set_plan()`.
 

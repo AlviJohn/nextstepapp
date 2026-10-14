@@ -6,7 +6,7 @@ def _load_dotenv() -> None:
     """Local dev convenience: read KEY=VALUE lines from the repo's .env. Vercel injects
     env vars itself, and real environment variables always win."""
     path = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
-    if not os.path.exists(path):
+    if os.getenv("NEXTSTEP_IGNORE_DOTENV") or not os.path.exists(path):
         return
     with open(path) as f:
         for line in f:
@@ -72,7 +72,10 @@ RAZORPAY_PLANS = {
     ("USD", "monthly"): os.getenv("RAZORPAY_PLAN_USD_MONTHLY", ""),
     ("USD", "yearly"): os.getenv("RAZORPAY_PLAN_USD_YEARLY", ""),
 }
-RAZORPAY_ENABLED = bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET and any(RAZORPAY_PLANS.values()))
+RAZORPAY_ENABLED = bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)
+# With plan IDs, Pro is an auto-renewing subscription. With keys only (e.g. before
+# Razorpay enables Subscriptions on the account), Pro is sold as a one-time pass.
+RAZORPAY_SUBSCRIPTIONS = RAZORPAY_ENABLED and any(RAZORPAY_PLANS.values())
 
 # Without Razorpay keys, lets users flip to Pro instantly so you can test gating.
 # Never on in production.

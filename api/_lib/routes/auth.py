@@ -24,6 +24,7 @@ def user_out(user: User) -> UserOut:
         plan_interval=user.plan_interval,
         plan_renews_at=user.plan_renews_at,
         is_pro=is_pro(user),
+        auto_renews=bool(user.razorpay_subscription_id) and is_pro(user),
     )
 
 
@@ -62,14 +63,19 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 DEV_EMAIL = "dev@localhost"
 
 
+def is_local_dev(request: Request) -> bool:
+    """True only for local development: not on Vercel, DEV_LOGIN not disabled, and the
+    request comes from this machine to a localhost address. The Host check also blocks
+    tunnels (ngrok etc.), which connect from loopback."""
+    client_host = request.client.host if request.client else ""
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+    return config.DEV_LOGIN and client_host in _LOOPBACK and host in _LOOPBACK
+
+
 @router.post("/auth/dev-login", response_model=AuthOut, include_in_schema=False)
 def dev_login(request: Request, session: Session = Depends(get_session)):
-    """Signs in as a local dev user without a password. Requires: not running on
-    Vercel, DEV_LOGIN not disabled, and the request coming from this machine."""
-    client_host = request.client.host if request.client else ""
-    # The Host check also blocks tunnels (ngrok etc.), which connect from loopback.
-    host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
-    if not config.DEV_LOGIN or client_host not in _LOOPBACK or host not in _LOOPBACK:
+    """Signs in as a local dev user without a password (local development only)."""
+    if not is_local_dev(request):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
     user = session.exec(select(User).where(User.email == DEV_EMAIL)).first()
     if not user:

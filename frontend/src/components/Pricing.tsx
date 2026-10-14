@@ -91,9 +91,13 @@ export function PlanCards({ p, cta }: { p: ReturnType<typeof usePricing>; cta: {
             <span className="text-sm text-mute">/ month</span>
           </div>
           <div className="mt-1 text-sm text-mute">
-            {p.interval === 'yearly'
-              ? `${formatPrice(p.prices[p.currency].yearly, p.currency)} billed yearly`
-              : 'Billed monthly. Cancel anytime.'}
+            {p.config?.mode === 'one_time'
+              ? p.interval === 'yearly'
+                ? `${formatPrice(p.prices[p.currency].yearly, p.currency)} once for 12 months. No auto-renewal.`
+                : `${formatPrice(p.prices[p.currency].monthly, p.currency)} once for 1 month. No auto-renewal.`
+              : p.interval === 'yearly'
+                ? `${formatPrice(p.prices[p.currency].yearly, p.currency)} billed yearly`
+                : 'Billed monthly. Cancel anytime.'}
           </div>
           <ul className="mt-6 space-y-3 text-sm">
             {PRO_FEATURES.map((f) => (

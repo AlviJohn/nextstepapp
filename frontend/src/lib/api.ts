@@ -27,6 +27,7 @@ export type User = {
   plan_interval: string | null
   plan_renews_at: string | null
   is_pro: boolean
+  auto_renews: boolean
 }
 
 export type Today = {
@@ -79,6 +80,7 @@ export type Interval = 'monthly' | 'yearly'
 
 export type BillingConfig = {
   provider: 'razorpay' | 'demo' | 'none'
+  mode: 'subscription' | 'one_time' | 'demo' | 'none'
   prices: Record<Currency, Record<Interval, number>>
   available: string[]
 }

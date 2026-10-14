@@ -69,6 +69,22 @@ class Task(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class Payment(SQLModel, table=True):
+    """One row per successful one-time payment. The unique payment ID makes granting
+    Pro idempotent across the browser callback and the webhook."""
+
+    __tablename__ = "payments"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    provider_payment_id: str = Field(unique=True, max_length=64)
+    provider_order_id: str = Field(max_length=64)
+    amount: int  # smallest currency unit (paise / cents)
+    currency: str = Field(max_length=3)
+    interval: str = Field(max_length=10)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class FocusSession(SQLModel, table=True):
     __tablename__ = "focus_sessions"
     __table_args__ = (Index("ix_focus_user_date", "user_id", "date"),)
